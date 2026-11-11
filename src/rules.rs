@@ -1,19 +1,13 @@
-//! Release decisions as pure functions over the component table, kept apart
-//! from the tool around them so Kani can check them without external inputs:
-//! `kani crates/xtask/src/release_rules.rs`, or
-//! `nix build .#checks.x86_64-linux.release-proofs`.
-//!
-//! The file names nothing outside `std`, and nothing newer than the 2015
-//! edition that a bare `kani <file>` compiles with, so it verifies on its own.
+//! Release planning over validated fixed-size component tables.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 
-/// How many components the table in `release.rs` lists; the proofs run at this size.
-pub(crate) const COMPONENT_COUNT: usize = 11;
+/// Component table size covered by the exhaustive Kani harnesses.
+pub const COMPONENT_COUNT: usize = 11;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
-pub(crate) enum State {
+pub enum State {
     /// Released as it is.
     Current,
     /// Changed since its tag under the tag's version.
@@ -24,11 +18,11 @@ pub(crate) enum State {
 
 /// The source version is below one already released.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Regressed;
+pub struct Regressed;
 
 /// `ahead` orders the source version against the newest tag's, and is `None`
 /// for a component that has no tag.
-pub(crate) fn state(ahead: Option<Ordering>, changed: bool) -> Result<State, Regressed> {
+pub fn state(ahead: Option<Ordering>, changed: bool) -> Result<State, Regressed> {
     match ahead {
         None | Some(Ordering::Greater) => Ok(State::Ready),
         Some(Ordering::Less) => Err(Regressed),
@@ -39,7 +33,7 @@ pub(crate) fn state(ahead: Option<Ordering>, changed: bool) -> Result<State, Reg
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
-pub(crate) enum Kind {
+pub enum Kind {
     /// A net core or bootloader. Units receive it through the manifest entries
     /// of the application at this table index.
     Part {
@@ -51,16 +45,16 @@ pub(crate) enum Kind {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
-pub(crate) struct Link {
-    pub(crate) kind: Kind,
+pub struct Link {
+    pub kind: Kind,
     /// Bumped only by name.
-    pub(crate) manual: bool,
+    pub manual: bool,
 }
 
 /// Every part names an application, and no application is bumped by name only:
 /// it could then stay behind a part it has to deliver. Every other function
 /// here requires a valid table.
-pub(crate) fn valid<const N: usize>(table: &[Link; N]) -> bool {
+pub fn valid<const N: usize>(table: &[Link; N]) -> bool {
     for i in 0..N {
         match table[i].kind {
             Kind::Part { app } => {
@@ -83,7 +77,7 @@ pub(crate) fn valid<const N: usize>(table: &[Link; N]) -> bool {
 /// a part on its way out makes its application release too. `behind[i]` says
 /// part `i`'s counter is above the one its application's newest entry carries.
 /// Returns, for each application made to release, the part that forces it.
-pub(crate) fn deliver<const N: usize>(
+pub fn deliver<const N: usize>(
     table: &[Link; N],
     states: &mut [State; N],
     behind: &[bool; N],
@@ -109,7 +103,7 @@ pub(crate) fn deliver<const N: usize>(
 /// The components `bump` raises: the `named` ones, or without names every
 /// changed one that is not bumped by name only; plus the application of each
 /// part among them. A component already ahead of its tag is never raised again.
-pub(crate) fn bump_set<const N: usize>(
+pub fn bump_set<const N: usize>(
     table: &[Link; N],
     states: &[State; N],
     named: Option<&[bool; N]>,
@@ -136,7 +130,7 @@ pub(crate) fn bump_set<const N: usize>(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     /// The named component is not ahead of its tag.
     NotReady(usize),
     /// No release of `app` is on its way to deliver `part`, so no unit would
@@ -146,13 +140,13 @@ pub(crate) enum Refusal {
 
 /// Table indices in the order `publish` releases them.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Order<const N: usize> {
+pub struct Order<const N: usize> {
     items: [usize; N],
     len: usize,
 }
 
 impl<const N: usize> Order<N> {
-    pub(crate) fn as_slice(&self) -> &[usize] {
+    pub fn as_slice(&self) -> &[usize] {
         &self.items[..self.len]
     }
 }
@@ -168,7 +162,7 @@ fn rank(kind: Kind) -> u8 {
 /// The components `publish` releases: the `named` ones, or without names every
 /// one ahead of its tag. Parts come first, because an application's manifest
 /// entry hashes the published net core and bootloader.
-pub(crate) fn publish_order<const N: usize>(
+pub fn publish_order<const N: usize>(
     table: &[Link; N],
     states: &[State; N],
     named: Option<&[bool; N]>,
@@ -207,14 +201,14 @@ pub(crate) fn publish_order<const N: usize>(
 }
 
 /// The next counter, only when it stays within the component's representation.
-pub(crate) fn successor(value: u64, maximum: u64) -> Option<u64> {
+pub fn successor(value: u64, maximum: u64) -> Option<u64> {
     value.checked_add(1).filter(|next| *next <= maximum)
 }
 
 /// Index of the oldest Desktop release from which every later one speaks at
 /// least `want`. `speaks` is oldest first; `None` marks a release without the
 /// wire constant.
-pub(crate) fn oldest_covering(want: [u64; 3], speaks: &[Option<[u64; 3]>]) -> Option<usize> {
+pub fn oldest_covering(want: [u64; 3], speaks: &[Option<[u64; 3]>]) -> Option<usize> {
     let mut floor = None;
     let mut i = speaks.len();
     while i > 0 {

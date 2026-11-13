@@ -3,8 +3,8 @@ name = "pure-release"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Pure release planning decisions verified with Kani"
+description = "Pure release planning decisions verified with Verus and Kani"
 repository = "https://github.com/Abrahamh08/pure-release"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(verus_only)"] }

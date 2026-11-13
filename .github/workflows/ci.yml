@@ -20,3 +20,21 @@ jobs:
         with:
           kani-version: '0.68.0'
           args: '--lib --output-format terse'
+      - name: Install pinned Verus
+        env:
+          VERUS_VERSION: 0.2026.11.02.8bf68ee
+          VERUS_SHA256: f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          archive="$RUNNER_TEMP/verus-$VERUS_VERSION.zip"
+          curl --fail --location --retry 3 \
+            "https://github.com/verus-lang/verus/releases/download/release/$VERUS_VERSION/verus-$VERUS_VERSION-x86-linux.zip" \
+            --output "$archive"
+          echo "$VERUS_SHA256  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/verus"
+          unzip -q "$archive" -d "$RUNNER_TEMP/verus"
+          echo "$RUNNER_TEMP/verus/verus-x86-linux" >> "$GITHUB_PATH"
+      - name: Verify with Verus
+        env:
+          RUSTUP_TOOLCHAIN: 1.99.1
+        run: ./tools/verify-verus.sh

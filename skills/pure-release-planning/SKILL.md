@@ -27,6 +27,8 @@ One `Link` per component; the array index is the component's identity in every a
 
 # What the proofs cover
 
-Kani proves the rules for every valid table and every combination of states at exactly `COMPONENT_COUNT` (11) components, and `oldest_covering` for histories of zero through five releases. The functions accept any `N`, but other sizes are unproven: size the table as `[Link; pure_release::COMPONENT_COUNT]`.
+Verus verifies all seven release properties for arbitrary table sizes and compatibility-history lengths. Run `tools/verify-verus.sh` with the pinned verifier on `PATH`; its strict flags reject unproved assumptions and skipped executable bodies. Reuse `vstd` for general mathematical lemmas; keep release-specific facts in the checked helper module.
+
+Kani independently checks every valid table and combination of states at `COMPONENT_COUNT` (11) components, and `oldest_covering` for histories of zero through five releases. Both verifiers cover arbitrary `u64` version triples. No runtime or Cargo dependencies are added by the Verus annotations.
 
 The proofs say nothing about hardware behaviour, about how changes and dependencies are discovered, or about whether a change needs a major version bump.

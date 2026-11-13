@@ -2,9 +2,43 @@
 
 use core::cmp::Ordering;
 
-/// Component table size covered by the exhaustive Kani harnesses.
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
+#[cfg(verus_only)]
+mod lemmas;
+#[cfg(verus_only)]
+mod spec;
+#[cfg(verus_only)]
+mod theorems;
+
+#[cfg(verus_only)]
+use lemmas::{
+    lemma_carrying_step, lemma_forcing_step, lemma_parts_carry_nothing, lemma_release_next,
+};
+#[cfg(verus_only)]
+use spec::{
+    asked, at_least_spec, bumped, carries_asked_below, covers, forced, forces, forcing_below,
+    in_release_order, is_part_of, names, no_carrier, not_ready, rank_of, releases, valid_table,
+};
+
+/// Verus proof blocks are erased from ordinary builds.
+#[cfg(not(verus_only))]
+macro_rules! proof {
+    ($($tokens:tt)*) => {};
+}
+
+/// Ghost declarations shared by later proof blocks are erased as well.
+#[cfg(not(verus_only))]
+macro_rules! proof_decl {
+    ($($tokens:tt)*) => {};
+}
+
+/// Component table size covered by the exhaustive Kani harnesses. The Verus
+/// proofs hold for every size.
 pub const COMPONENT_COUNT: usize = 11;
 
+#[cfg_attr(verus_only, verus_verify, derive(Structural))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum State {
@@ -17,11 +51,19 @@ pub enum State {
 }
 
 /// The source version is below one already released.
+#[cfg_attr(verus_only, verus_verify, derive(Structural))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Regressed;
 
 /// `ahead` orders the source version against the newest tag's, and is `None`
 /// for a component that has no tag.
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        result is Err <==> ahead == Some(Ordering::Less),
+        ahead is None || ahead == Some(Ordering::Greater) ==> result == Ok::<State, Regressed>(State::Ready),
+        ahead == Some(Ordering::Equal) && changed ==> result == Ok::<State, Regressed>(State::NeedsBump),
+        ahead == Some(Ordering::Equal) && !changed ==> result == Ok::<State, Regressed>(State::Current),
+))]
 pub fn state(ahead: Option<Ordering>, changed: bool) -> Result<State, Regressed> {
     match ahead {
         None | Some(Ordering::Greater) => Ok(State::Ready),
@@ -31,6 +73,7 @@ pub fn state(ahead: Option<Ordering>, changed: bool) -> Result<State, Regressed>
     }
 }
 
+#[cfg_attr(verus_only, verus_verify, derive(Structural))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum Kind {
@@ -43,6 +86,7 @@ pub enum Kind {
     Other,
 }
 
+#[cfg_attr(verus_only, verus_verify, derive(Structural))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub struct Link {
@@ -54,7 +98,20 @@ pub struct Link {
 /// Every part names an application, and no application is bumped by name only:
 /// it could then stay behind a part it has to deliver. Every other function
 /// here requires a valid table.
+#[cfg_attr(verus_only, verifier::loop_isolation(false))]
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        result == valid_table(table@),
+))]
 pub fn valid<const N: usize>(table: &[Link; N]) -> bool {
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            forall|j: int| 0 <= j < i ==> match (#[trigger] table@[j]).kind {
+                Kind::Part { app } => app < N && table@[app as int].kind is App,
+                Kind::App => !table@[j].manual,
+                Kind::Other => true,
+            },
+    ))]
     for i in 0..N {
         match table[i].kind {
             Kind::Part { app } => {
@@ -77,13 +134,51 @@ pub fn valid<const N: usize>(table: &[Link; N]) -> bool {
 /// a part on its way out makes its application release too. `behind[i]` says
 /// part `i`'s counter is above the one its application's newest entry carries.
 /// Returns, for each application made to release, the part that forces it.
+#[cfg_attr(verus_only, verifier::loop_isolation(false))]
+#[cfg_attr(verus_only, verus_spec(result =>
+    requires
+        valid_table(table@),
+    ensures
+        forall|app: int| 0 <= app < N ==> #[trigger] final(states)@[app] == (
+            if forced(table@, old(states)@, behind@, app) { State::NeedsBump } else { old(states)@[app] }),
+        forall|app: int| 0 <= app < N ==> (
+            #[trigger] result@[app] is Some <==> forced(table@, old(states)@, behind@, app)),
+        forall|app: int| 0 <= app < N ==> (#[trigger] result@[app] matches Some(part) ==>
+            forces(table@, old(states)@, behind@, part as int, app)
+            && !forcing_below(table@, old(states)@, behind@, app, part as int)),
+))]
 pub fn deliver<const N: usize>(
     table: &[Link; N],
     states: &mut [State; N],
     behind: &[bool; N],
 ) -> [Option<usize>; N] {
-    let mut forced = [None; N];
+    let mut forced: [Option<usize>; N] = [None; N];
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            valid_table(table@),
+            forall|k: int| 0 <= k < N && !(table@[k].kind is App) ==> #[trigger] states@[k] == old(states)@[k],
+            forall|app: int| 0 <= app < N ==> #[trigger] states@[app] == (
+                if old(states)@[app] is Current && forcing_below(table@, old(states)@, behind@, app, i as int) {
+                    State::NeedsBump
+                } else {
+                    old(states)@[app]
+                }),
+            forall|app: int| 0 <= app < N ==> (#[trigger] forced@[app] is Some <==>
+                old(states)@[app] is Current && forcing_below(table@, old(states)@, behind@, app, i as int)),
+            forall|app: int| 0 <= app < N ==> (#[trigger] forced@[app] matches Some(part) ==>
+                part < i
+                && forces(table@, old(states)@, behind@, part as int, app)
+                && !forcing_below(table@, old(states)@, behind@, app, part as int)),
+    ))]
     for i in 0..N {
+        proof! {
+            assert forall|app: int| 0 <= app < N implies
+                #[trigger] forcing_below(table@, old(states)@, behind@, app, i + 1)
+                    == (forcing_below(table@, old(states)@, behind@, app, i as int)
+                        || forces(table@, old(states)@, behind@, i as int, app)) by {
+                lemma_forcing_step(table@, old(states)@, behind@, app, i as int);
+            }
+        }
         let Kind::Part { app } = table[i].kind else {
             continue;
         };
@@ -103,24 +198,61 @@ pub fn deliver<const N: usize>(
 /// The components `bump` raises: the `named` ones, or without names every
 /// changed one that is not bumped by name only; plus the application of each
 /// part among them. A component already ahead of its tag is never raised again.
+#[cfg_attr(verus_only, verifier::loop_isolation(false))]
+#[cfg_attr(verus_only, verus_spec(result =>
+    requires
+        valid_table(table@),
+    ensures
+        forall|i: int| 0 <= i < N ==> #[trigger] result@[i] == bumped(table@, states@, names(named), i),
+))]
 pub fn bump_set<const N: usize>(
     table: &[Link; N],
     states: &[State; N],
     named: Option<&[bool; N]>,
 ) -> [bool; N] {
     let mut wanted = [false; N];
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            forall|j: int| 0 <= j < i ==> #[trigger] wanted@[j] == asked(table@, states@, names(named), j),
+    ))]
     for i in 0..N {
         wanted[i] = match named {
             Some(named) => named[i],
             None => states[i] == State::NeedsBump && !table[i].manual,
         };
     }
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            valid_table(table@),
+            forall|j: int| 0 <= j < N ==> #[trigger] wanted@[j] == (
+                asked(table@, states@, names(named), j)
+                || carries_asked_below(table@, states@, names(named), j, i as int)),
+    ))]
     for i in 0..N {
-        match table[i].kind {
+        proof! {
+            assert forall|app: int| 0 <= app < N implies
+                #[trigger] carries_asked_below(table@, states@, names(named), app, i + 1)
+                    == (carries_asked_below(table@, states@, names(named), app, i as int)
+                        || (is_part_of(table@, i as int, app) && asked(table@, states@, names(named), i as int))) by {
+                lemma_carrying_step(table@, states@, names(named), app, i as int);
+            }
+            if !(table@[i as int].kind is App) {
+                lemma_parts_carry_nothing(table@, states@, names(named), i as int, i as int);
+            }
+        }
+        let kind = table[i].kind;
+        match kind {
             Kind::Part { app } if wanted[i] => wanted[app] = true,
             _ => {}
         }
     }
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            forall|j: int| 0 <= j < i ==> #[trigger] wanted@[j] == bumped(table@, states@, names(named), j),
+            forall|j: int| i <= j < N ==> #[trigger] wanted@[j] == (
+                asked(table@, states@, names(named), j)
+                || carries_asked_below(table@, states@, names(named), j, N as int)),
+    ))]
     for i in 0..N {
         if states[i] == State::Ready {
             wanted[i] = false;
@@ -129,6 +261,7 @@ pub fn bump_set<const N: usize>(
     wanted
 }
 
+#[cfg_attr(verus_only, verus_verify, derive(Structural))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Refusal {
     /// The named component is not ahead of its tag.
@@ -139,6 +272,7 @@ pub enum Refusal {
 }
 
 /// Table indices in the order `publish` releases them.
+#[cfg_attr(verus_only, verus_verify)]
 #[derive(Clone, Copy, Debug)]
 pub struct Order<const N: usize> {
     items: [usize; N],
@@ -146,11 +280,39 @@ pub struct Order<const N: usize> {
 }
 
 impl<const N: usize> Order<N> {
+    #[cfg_attr(verus_only, verus_spec(result =>
+        ensures
+            result@ == self@,
+    ))]
     pub fn as_slice(&self) -> &[usize] {
+        proof! {
+            use_type_invariant(self);
+        }
         &self.items[..self.len]
     }
 }
 
+#[cfg(verus_only)]
+verus! {
+
+impl<const N: usize> Order<N> {
+    #[verifier::type_invariant]
+    pub closed spec fn well_formed(self) -> bool {
+        self.len <= N
+    }
+
+    /// The released indices, in order.
+    pub closed spec fn view(self) -> Seq<usize> {
+        self.items@.subrange(0, self.len as int)
+    }
+}
+
+}
+
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        result == rank_of(kind),
+))]
 fn rank(kind: Kind) -> u8 {
     match kind {
         Kind::Part { .. } => 0,
@@ -162,12 +324,42 @@ fn rank(kind: Kind) -> u8 {
 /// The components `publish` releases: the `named` ones, or without names every
 /// one ahead of its tag. Parts come first, because an application's manifest
 /// entry hashes the published net core and bootloader.
+#[cfg_attr(verus_only, verifier::loop_isolation(false))]
+#[cfg_attr(verus_only, verus_spec(result =>
+    requires
+        valid_table(table@),
+    ensures
+        match result {
+            Ok(order) => {
+                &&& forall|i: int| 0 <= i < N ==> !not_ready(states@, names(named), i)
+                &&& forall|i: int| 0 <= i < N ==> !no_carrier(table@, states@, names(named), i)
+                &&& releases(table@, states@, names(named), order@)
+            },
+            Err(Refusal::NotReady(i)) => {
+                &&& i < N
+                &&& not_ready(states@, names(named), i as int)
+                &&& forall|j: int| 0 <= j < i ==> !not_ready(states@, names(named), j)
+            },
+            Err(Refusal::NoCarrier { part, app }) => {
+                &&& part < N
+                &&& is_part_of(table@, part as int, app as int)
+                &&& no_carrier(table@, states@, names(named), part as int)
+                &&& forall|j: int| 0 <= j < N ==> !not_ready(states@, names(named), j)
+                &&& forall|j: int| 0 <= j < part ==> !no_carrier(table@, states@, names(named), j)
+            },
+        },
+))]
 pub fn publish_order<const N: usize>(
     table: &[Link; N],
     states: &[State; N],
     named: Option<&[bool; N]>,
 ) -> Result<Order<N>, Refusal> {
     let mut chosen = [false; N];
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            forall|j: int| 0 <= j < i ==> #[trigger] chosen@[j] == spec::chosen(states@, names(named), j),
+            forall|j: int| 0 <= j < i ==> !not_ready(states@, names(named), j),
+    ))]
     for i in 0..N {
         chosen[i] = match named {
             Some(named) => named[i],
@@ -177,44 +369,135 @@ pub fn publish_order<const N: usize>(
             return Err(Refusal::NotReady(i));
         }
     }
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            valid_table(table@),
+            forall|j: int| 0 <= j < i ==> !no_carrier(table@, states@, names(named), j),
+    ))]
     for i in 0..N {
-        match table[i].kind {
+        let kind = table[i].kind;
+        match kind {
             Kind::Part { app } if chosen[i] && states[app] != State::Ready => {
                 return Err(Refusal::NoCarrier { part: i, app });
             }
             _ => {}
         }
     }
-    let mut order = Order {
-        items: [0; N],
-        len: 0,
-    };
+    let mut items = [0usize; N];
+    let mut len = 0usize;
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            len <= N,
+            forall|p: int| 0 <= p < len ==> #[trigger] items@[p] < N,
+            forall|p: int| 0 <= p < len ==> spec::chosen(states@, names(named), #[trigger] items@[p] as int),
+            forall|p: int| 0 <= p < len ==> rank_of(table@[#[trigger] items@[p] as int].kind) < wave,
+            forall|j: int| 0 <= j < N && spec::chosen(states@, names(named), j) && rank_of(table@[j].kind) < wave
+                ==> items@.subrange(0, len as int).contains(j as usize),
+            in_release_order(table@, items@.subrange(0, len as int)),
+    ))]
     for wave in 0..3 {
+        #[cfg_attr(verus_only, verus_spec(
+            invariant
+                0 <= wave < 3,
+                len <= N,
+                forall|j: int| 0 <= j < N ==> #[trigger] chosen@[j] == spec::chosen(states@, names(named), j),
+                forall|p: int| 0 <= p < len ==> #[trigger] items@[p] < N,
+                forall|p: int| 0 <= p < len ==> spec::chosen(states@, names(named), #[trigger] items@[p] as int),
+                forall|p: int| 0 <= p < len ==> {
+                    let at = #[trigger] items@[p] as int;
+                    rank_of(table@[at].kind) < wave || (rank_of(table@[at].kind) == wave && at < i)
+                },
+                forall|j: int| 0 <= j < N && spec::chosen(states@, names(named), j)
+                    && (rank_of(table@[j].kind) < wave || (rank_of(table@[j].kind) == wave && j < i))
+                    ==> items@.subrange(0, len as int).contains(j as usize),
+                in_release_order(table@, items@.subrange(0, len as int)),
+        ))]
         for i in 0..N {
             if chosen[i] && rank(table[i].kind) == wave {
-                order.items[order.len] = i;
-                order.len += 1;
+                proof_decl! {
+                    let ghost released = items@.subrange(0, len as int);
+                }
+                proof! {
+                    lemma_release_next(table@, released, i, wave as int);
+                }
+                items[len] = i;
+                len += 1;
+                proof! {
+                    assert(items@.subrange(0, len as int) =~= released.push(i));
+                }
             }
         }
     }
-    Ok(order)
+    Ok(Order { items, len })
 }
 
 /// The next counter, only when it stays within the component's representation.
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        result == (if value < maximum { Some((value + 1) as u64) } else { None::<u64> }),
+))]
 pub fn successor(value: u64, maximum: u64) -> Option<u64> {
-    value.checked_add(1).filter(|next| *next <= maximum)
+    match value.checked_add(1) {
+        Some(next) if next <= maximum => Some(next),
+        _ => None,
+    }
+}
+
+/// Lexicographic `version >= want`, spelled out because Verus has no
+/// specification for array comparison.
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        result == at_least_spec(version, want),
+))]
+fn at_least(version: [u64; 3], want: [u64; 3]) -> bool {
+    if version[0] != want[0] {
+        return version[0] > want[0];
+    }
+    if version[1] != want[1] {
+        return version[1] > want[1];
+    }
+    version[2] >= want[2]
 }
 
 /// Index of the oldest Desktop release from which every later one speaks at
 /// least `want`. `speaks` is oldest first; `None` marks a release without the
 /// wire constant.
+#[cfg_attr(verus_only, verus_spec(result =>
+    ensures
+        match result {
+            Some(floor) => {
+                &&& floor < speaks@.len()
+                &&& forall|later: int| floor <= later < speaks@.len() ==> covers(want, speaks@, later)
+                &&& floor == 0 || !covers(want, speaks@, floor - 1)
+            },
+            None => speaks@.len() == 0 || !covers(want, speaks@, speaks@.len() - 1),
+        },
+))]
 pub fn oldest_covering(want: [u64; 3], speaks: &[Option<[u64; 3]>]) -> Option<usize> {
     let mut floor = None;
     let mut i = speaks.len();
+    #[cfg_attr(verus_only, verus_spec(
+        invariant
+            i <= speaks@.len(),
+        invariant_except_break
+            forall|later: int| i <= later < speaks@.len() ==> covers(want, speaks@, later),
+            floor == (if i < speaks@.len() { Some(i) } else { None::<usize> }),
+        ensures
+            match floor {
+                Some(floor) => {
+                    &&& floor < speaks@.len()
+                    &&& forall|later: int| floor <= later < speaks@.len() ==> covers(want, speaks@, later)
+                    &&& floor == 0 || !covers(want, speaks@, floor - 1)
+                },
+                None => speaks@.len() == 0 || !covers(want, speaks@, speaks@.len() - 1),
+            },
+        decreases i,
+    ))]
     while i > 0 {
         i -= 1;
-        match speaks[i] {
-            Some(version) if version >= want => floor = Some(i),
+        let spoken = speaks[i];
+        match spoken {
+            Some(version) if at_least(version, want) => floor = Some(i),
             _ => break,
         }
     }
